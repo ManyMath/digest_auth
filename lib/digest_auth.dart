@@ -16,6 +16,7 @@ class DigestAuth {
   String? nonce;
   String? uri;
   String? qop = "auth";
+  int _nonceCount = 0;
 
   DigestAuth(this.username, this.password);
 
@@ -24,15 +25,20 @@ class DigestAuth {
     final Map<String, String>? values = _splitAuthenticateHeader(authInfo);
     if (values != null) {
       realm = values['realm'];
-      nonce = values['nonce'];
+      // Check if the nonce has changed.
+      if (nonce != values['nonce']) {
+        nonce = values['nonce'];
+        _nonceCount = 0; // Reset nonce count when nonce changes.
+      }
     }
   }
 
   /// Generate the Digest Authorization header.
-  String getAuthString(String method, String uri, int nonceCount) {
+  String getAuthString(String method, String uri) {
     this.uri = uri;
+    _nonceCount++;
     String cnonce = _computeCnonce();
-    String nc = _formatNonceCount(nonceCount);
+    String nc = _formatNonceCount(_nonceCount);
 
     String ha1 = md5Hash("$username:$realm:$password");
     String ha2 = md5Hash("$method:$uri");
@@ -46,13 +52,15 @@ class DigestAuth {
     if (header == null || !header.startsWith('Digest ')) {
       return null;
     }
-    String token = header.substring(7); // remove 'Digest '
+    String token = header.substring(7); // Remove 'Digest '.
     final Map<String, String> result = {};
 
     final components = token.split(',').map((token) => token.trim());
     for (final component in components) {
       final kv = component.split('=');
-      result[kv[0]] = kv.getRange(1, kv.length).join('=').replaceAll('"', '');
+      final key = kv[0];
+      final value = kv.sublist(1).join('=').replaceAll('"', '');
+      result[key] = value;
     }
     return result;
   }

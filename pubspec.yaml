@@ -1,6 +1,6 @@
 name: digest_auth
 description: HTTP Digest Authentication for Monero's JSON-RPC API.
-version: 1.0.0
+version: 1.0.1
 repository: https://github.com/ManyMath/digest_auth
 
 environment:

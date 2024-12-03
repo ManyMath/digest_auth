@@ -58,8 +58,7 @@ class DaemonRpc {
 
     // Create Authorization header for the second request.
     String uri = Uri.parse(rpcUrl).path;
-    int nonceCount = 1; // Start with 1 and increment for subsequent requests.
-    String authHeader = digestAuth.getAuthString('POST', uri, nonceCount);
+    String authHeader = digestAuth.getAuthString('POST', uri);
 
     // Make the authenticated request.
     final authenticatedResponse = await client.post(
