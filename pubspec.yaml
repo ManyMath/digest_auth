@@ -1,15 +1,16 @@
 name: digest_auth
-description: A starting point for Dart libraries or applications.
+description: HTTP Digest Authentication for Monero's JSON-RPC API.
 version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+repository: https://github.com/ManyMath/digest_auth
 
 environment:
   sdk: ^3.5.3
 
-# Add regular dependencies here.
-dependencies:
-  # path: ^1.8.0
-
 dev_dependencies:
   lints: ^4.0.0
   test: ^1.24.0
+  http: ^1.2.2 # Only needed for tests.
+  # monero_rpc: ^1.0.0 # Only needed for tests.  Removed to avoid recursive dependencies.
+dependencies:
+  convert: ^3.1.2
+  crypto: ^3.0.6
