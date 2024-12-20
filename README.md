@@ -13,4 +13,4 @@ dart pub add digest_auth
 
 ## Usage
 
-See the example: https://github.com/ManyMath/digest_auth/blob/main/example/digest_auth_example.dart
+See the example: https://github.com/cypherstack/digest_auth/blob/main/example/digest_auth_example.dart
