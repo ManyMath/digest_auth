@@ -1,0 +1,4 @@
+# Skip integration tests that require a live daemon
+tags:
+  integration:
+    skip: "Requires a live Monero daemon"

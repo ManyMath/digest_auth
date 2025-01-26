@@ -1,3 +1,5 @@
+export 'src/errors.dart';
+
 import 'dart:convert';
 import 'dart:math' as math;
 
