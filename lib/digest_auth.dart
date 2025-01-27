@@ -6,6 +6,8 @@ import 'dart:math' as math;
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 
+import 'src/errors.dart';
+
 /// HTTP Digest authentication.
 ///
 /// Adapted from https://github.com/dart-lang/http/issues/605#issue-963962341.
@@ -18,20 +20,37 @@ class DigestAuth {
   String? nonce;
   String? uri;
   String? qop = "auth";
+  String? opaque;
   int _nonceCount = 0;
 
   DigestAuth(this.username, this.password);
 
-  /// Initialize Digest parameters from the `WWW-Authenticate` header.
-  void initFromAuthorizationHeader(String authInfo) {
-    final Map<String, String>? values = _splitAuthenticateHeader(authInfo);
-    if (values != null) {
-      realm = values['realm'];
-      // Check if the nonce has changed.
-      if (nonce != values['nonce']) {
-        nonce = values['nonce'];
-        _nonceCount = 0; // Reset nonce count when nonce changes.
-      }
+  /// Parse a `WWW-Authenticate` header and update internal state.
+  ///
+  /// Throws [DigestAuthFormatException] on malformed input.
+  /// Throws [StaleNonceException] if stale=true (nonce already updated).
+  void initFromAuthorizationHeader(String? authInfo) {
+    if (authInfo == null || authInfo.isEmpty) {
+      throw DigestAuthFormatException('Authorization header is null or empty');
+    }
+
+    final Map<String, String> values = _parseAuthenticateHeader(authInfo);
+
+    realm = values['realm'];
+    opaque = values['opaque'];
+
+    // Check if the nonce has changed.
+    if (nonce != values['nonce']) {
+      nonce = values['nonce'];
+      _nonceCount = 0; // Reset nonce count when nonce changes.
+    }
+
+    // Stale check must come after nonce update.
+    final stale = values['stale'];
+    if (stale != null && stale.toLowerCase() == 'true') {
+      throw StaleNonceException(
+        'Server indicated nonce is stale. Nonce has been updated -- retry with getAuthString().',
+      );
     }
   }
 
@@ -46,30 +65,75 @@ class DigestAuth {
     String ha2 = md5Hash("$method:$uri");
     String response = md5Hash("$ha1:$nonce:$nc:$cnonce:$qop:$ha2");
 
-    return 'Digest username="$username", realm="$realm", nonce="$nonce", uri="$uri", qop=$qop, nc=$nc, cnonce="$cnonce", response="$response"';
+    var header = 'Digest username="$username", realm="$realm", nonce="$nonce", '
+        'uri="$uri", qop=$qop, nc=$nc, cnonce="$cnonce", response="$response"';
+
+    if (opaque != null) {
+      header += ', opaque="$opaque"';
+    }
+
+    return header;
   }
 
-  /// Helper to parse the `WWW-Authenticate` header.
-  Map<String, String>? _splitAuthenticateHeader(String? header) {
-    if (header == null || !header.startsWith('Digest ')) {
-      return null;
+  /// Parse WWW-Authenticate header with quoted-string awareness.
+  Map<String, String> _parseAuthenticateHeader(String header) {
+    if (!header.startsWith('Digest ')) {
+      throw DigestAuthFormatException(
+        'Expected Digest challenge, got: ${header.length > 20 ? '${header.substring(0, 20)}...' : header}',
+      );
     }
-    String token = header.substring(7); // Remove 'Digest '.
-    final Map<String, String> result = {};
 
-    final components = token.split(',').map((token) => token.trim());
-    for (final component in components) {
-      final kv = component.split('=');
-      final key = kv[0];
-      final value = kv.sublist(1).join('=').replaceAll('"', '');
-      result[key] = value;
+    final params = <String, String>{};
+    final token = header.substring(7); // Remove 'Digest '
+
+    var key = StringBuffer();
+    var value = StringBuffer();
+    var inQuotes = false;
+    var parsingValue = false;
+
+    for (var i = 0; i < token.length; i++) {
+      final c = token[i];
+
+      if (c == '"' && parsingValue) {
+        inQuotes = !inQuotes;
+        continue;
+      }
+
+      if (c == '=' && !parsingValue && !inQuotes) {
+        parsingValue = true;
+        continue;
+      }
+
+      if (c == ',' && !inQuotes) {
+        final k = key.toString().trim();
+        if (k.isNotEmpty) {
+          params[k] = value.toString().trim();
+        }
+        key = StringBuffer();
+        value = StringBuffer();
+        parsingValue = false;
+        continue;
+      }
+
+      if (parsingValue) {
+        value.write(c);
+      } else {
+        key.write(c);
+      }
     }
-    return result;
+
+    // Last param (no trailing comma).
+    final k = key.toString().trim();
+    if (k.isNotEmpty) {
+      params[k] = value.toString().trim();
+    }
+
+    return params;
   }
 
   /// Helper to compute a random cnonce.
   String _computeCnonce() {
-    final math.Random rnd = math.Random();
+    final math.Random rnd = math.Random.secure();
     final List<int> values = List<int>.generate(16, (i) => rnd.nextInt(256));
     return hex.encode(values);
   }
