@@ -21,3 +21,8 @@ class StaleNonceException extends DigestAuthException {
 class AuthenticationException extends DigestAuthException {
   const AuthenticationException(super.message);
 }
+
+/// Caller's explicit algorithm not offered by server.
+class AlgorithmMismatchException extends DigestAuthException {
+  const AlgorithmMismatchException(super.message);
+}

@@ -1,3 +1,4 @@
+export 'src/algorithm.dart';
 export 'src/errors.dart';
 
 import 'dart:convert';
@@ -6,6 +7,7 @@ import 'dart:math' as math;
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 
+import 'src/algorithm.dart';
 import 'src/errors.dart';
 
 /// HTTP Digest authentication.
@@ -21,9 +23,12 @@ class DigestAuth {
   String? uri;
   String? qop = "auth";
   String? opaque;
+  final DigestAlgorithm _algorithm;
   int _nonceCount = 0;
 
-  DigestAuth(this.username, this.password);
+  DigestAuth(this.username, this.password,
+      {DigestAlgorithm algorithm = DigestAlgorithm.md5})
+      : _algorithm = algorithm;
 
   /// Parse a `WWW-Authenticate` header and update internal state.
   ///
@@ -61,12 +66,14 @@ class DigestAuth {
     String cnonce = _computeCnonce();
     String nc = _formatNonceCount(_nonceCount);
 
-    String ha1 = md5Hash("$username:$realm:$password");
-    String ha2 = md5Hash("$method:$uri");
-    String response = md5Hash("$ha1:$nonce:$nc:$cnonce:$qop:$ha2");
+    String ha1 = _algorithm.hash(utf8.encode("$username:$realm:$password"));
+    String ha2 = _algorithm.hash(utf8.encode("$method:$uri"));
+    String response =
+        _algorithm.hash(utf8.encode("$ha1:$nonce:$nc:$cnonce:$qop:$ha2"));
 
     var header = 'Digest username="$username", realm="$realm", nonce="$nonce", '
-        'uri="$uri", qop=$qop, nc=$nc, cnonce="$cnonce", response="$response"';
+        'uri="$uri", qop=$qop, nc=$nc, cnonce="$cnonce", '
+        'response="$response", algorithm=${_algorithm.headerValue}';
 
     if (opaque != null) {
       header += ', opaque="$opaque"';
@@ -142,7 +149,7 @@ class DigestAuth {
   String _formatNonceCount(int count) =>
       count.toRadixString(16).padLeft(8, '0');
 
-  /// Compute the MD5 hash of a string.
+  @Deprecated('Use DigestAlgorithm.md5.hash() instead.')
   String md5Hash(String input) {
     return md5.convert(utf8.encode(input)).toString();
   }
