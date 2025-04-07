@@ -442,6 +442,94 @@ void main() {
     });
   });
 
+  group('Algorithm negotiation', () {
+    test('auto-selects algorithm from server challenge', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth",algorithm=SHA-256',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+
+    test('explicit algorithm matches server -- no error', () {
+      final a = DigestAuth('u', 'p', algorithm: DigestAlgorithm.sha256);
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth",algorithm=SHA-256',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+
+    test('explicit algorithm mismatches server -- throws AlgorithmMismatchException', () {
+      final a = DigestAuth('u', 'p', algorithm: DigestAlgorithm.sha256);
+      expect(
+        () => a.initFromAuthorizationHeader(
+          'Digest realm="test",nonce="n",qop="auth",algorithm=MD5',
+        ),
+        throwsA(
+          isA<AlgorithmMismatchException>().having(
+            (e) => e.message,
+            'message',
+            contains('SHA-256'),
+          ),
+        ),
+      );
+    });
+
+    test('explicit algorithm with no server algorithm uses caller choice', () {
+      final a = DigestAuth('u', 'p', algorithm: DigestAlgorithm.sha256);
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth"',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+
+    test('no algorithm from either side defaults to MD5', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth"',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=MD5'));
+    });
+
+    test('case-insensitive algorithm matching from server', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth",algorithm=sha-256',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+  });
+
+  group('QOP configuration', () {
+    test('default qop is auth', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth"',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('qop=auth'));
+    });
+
+    test('custom qop via constructor', () {
+      final a = DigestAuth('u', 'p', qop: 'auth-int');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n1",qop="auth-int"',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('qop=auth-int'));
+    });
+
+    test('qop getter returns configured value', () {
+      final a = DigestAuth('u', 'p', qop: 'auth-int');
+      expect(a.qop, equals('auth-int'));
+    });
+  });
+
   group('md5Hash deprecation', () {
     test('md5Hash still works correctly', () {
       // ignore: deprecated_member_use_from_same_package

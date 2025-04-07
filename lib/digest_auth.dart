@@ -21,14 +21,22 @@ class DigestAuth {
   String? realm;
   String? nonce;
   String? uri;
-  String? qop = "auth";
+  final String _qop;
   String? opaque;
-  final DigestAlgorithm _algorithm;
+  final DigestAlgorithm? _userAlgorithm;
+  DigestAlgorithm _activeAlgorithm;
   int _nonceCount = 0;
 
+  /// Explicit [algorithm] is validated against the server challenge.
+  /// Omit to auto-negotiate (defaults to MD5 per RFC 2617).
   DigestAuth(this.username, this.password,
-      {DigestAlgorithm algorithm = DigestAlgorithm.md5})
-      : _algorithm = algorithm;
+      {DigestAlgorithm? algorithm, String qop = 'auth'})
+      : _userAlgorithm = algorithm,
+        _activeAlgorithm = algorithm ?? DigestAlgorithm.md5,
+        _qop = qop;
+
+  /// The configured quality-of-protection value.
+  String get qop => _qop;
 
   /// Parse a `WWW-Authenticate` header and update internal state.
   ///
@@ -43,6 +51,25 @@ class DigestAuth {
 
     realm = values['realm'];
     opaque = values['opaque'];
+
+    // Algorithm negotiation.
+    final serverAlgorithm = values['algorithm'];
+    if (serverAlgorithm != null) {
+      final offered = DigestAlgorithm.fromHeaderValue(serverAlgorithm);
+      if (_userAlgorithm != null) {
+        // Caller explicitly set algorithm -- validate server supports it
+        if (offered == null || offered != _userAlgorithm) {
+          throw AlgorithmMismatchException(
+            'Server offers algorithm=$serverAlgorithm but caller requires ${_userAlgorithm.headerValue}',
+          );
+        }
+      } else if (offered != null) {
+        // Auto-negotiate: use what server offers
+        _activeAlgorithm = offered;
+      }
+    }
+    // If server doesn't send algorithm param, RFC says default is MD5.
+    // _activeAlgorithm already defaults to md5 (or caller's explicit choice).
 
     // Check if the nonce has changed.
     if (nonce != values['nonce']) {
@@ -66,14 +93,14 @@ class DigestAuth {
     String cnonce = _computeCnonce();
     String nc = _formatNonceCount(_nonceCount);
 
-    String ha1 = _algorithm.hash(utf8.encode("$username:$realm:$password"));
-    String ha2 = _algorithm.hash(utf8.encode("$method:$uri"));
+    String ha1 = _activeAlgorithm.hash(utf8.encode("$username:$realm:$password"));
+    String ha2 = _activeAlgorithm.hash(utf8.encode("$method:$uri"));
     String response =
-        _algorithm.hash(utf8.encode("$ha1:$nonce:$nc:$cnonce:$qop:$ha2"));
+        _activeAlgorithm.hash(utf8.encode("$ha1:$nonce:$nc:$cnonce:$_qop:$ha2"));
 
     var header = 'Digest username="$username", realm="$realm", nonce="$nonce", '
-        'uri="$uri", qop=$qop, nc=$nc, cnonce="$cnonce", '
-        'response="$response", algorithm=${_algorithm.headerValue}';
+        'uri="$uri", qop=$_qop, nc=$nc, cnonce="$cnonce", '
+        'response="$response", algorithm=${_activeAlgorithm.headerValue}';
 
     if (opaque != null) {
       header += ', opaque="$opaque"';
