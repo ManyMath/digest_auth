@@ -536,4 +536,173 @@ void main() {
       expect(auth.md5Hash('test'), equals('098f6bcd4621d373cade4e832627b4f6'));
     });
   });
+
+  group('charset=UTF-8 handling', () {
+    test('ASCII username with charset=UTF-8 uses regular username param', () {
+      final a = DigestAuth('Mufasa', 'Circle of Life');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=UTF-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('username="Mufasa"'));
+      expect(header, isNot(contains('username*')));
+    });
+
+    test('non-ASCII username with charset=UTF-8 uses username* param', () {
+      final a = DigestAuth('J\u00e4s\u00f8n Doe', 'Secret');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=UTF-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains("username*=UTF-8''J%C3%A4s%C3%B8n%20Doe"));
+      expect(header, isNot(contains('username="')));
+    });
+
+    test('no charset in challenge -- no username* regardless of content', () {
+      final a = DigestAuth('J\u00e4s\u00f8n', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth"',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('username="J\u00e4s\u00f8n"'));
+      expect(header, isNot(contains('username*')));
+    });
+
+    test('NFC normalization -- decomposed and precomposed produce same hash', () {
+      // decomposed a-umlaut: a + combining diaeresis
+      final authNFD = DigestAuth('J\u0061\u0308n', 'pass');
+      // precomposed a-umlaut
+      final authNFC = DigestAuth('J\u00e4n', 'pass');
+
+      const challenge =
+          'Digest realm="test",nonce="fixedNonce",qop="auth",charset=UTF-8';
+      authNFD.initFromAuthorizationHeader(challenge);
+      authNFC.initFromAuthorizationHeader(challenge);
+
+      final headerNFD = authNFD.getAuthString('GET', '/path');
+      final headerNFC = authNFC.getAuthString('GET', '/path');
+
+      // The cnonces differ so responses will differ. Instead, verify both
+      // produce a username* with the same NFC-encoded value.
+      final usernameStarRegex = RegExp(r"username\*=UTF-8''([^ ,]+)");
+      final userNFD = usernameStarRegex.firstMatch(headerNFD)!.group(1)!;
+      final userNFC = usernameStarRegex.firstMatch(headerNFC)!.group(1)!;
+      expect(userNFD, equals(userNFC),
+          reason: 'NFC normalization should produce identical username* values');
+
+      // Also verify the encoded form is the precomposed a-umlaut
+      expect(userNFD, equals('J%C3%A4n'));
+    });
+
+    test('charset=UTF-8 case-insensitive', () {
+      final a = DigestAuth('J\u00e4n', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=utf-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains("username*=UTF-8''"));
+    });
+
+    test('userhash=false included when charset=UTF-8 active', () {
+      final a = DigestAuth('user', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=UTF-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('userhash=false'));
+    });
+
+    test('userhash not included when charset not present', () {
+      final a = DigestAuth('user', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth"',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, isNot(contains('userhash')));
+    });
+  });
+
+  group('RFC 5987 ext-value encoding', () {
+    test('space encoded as %20', () {
+      final a = DigestAuth('J\u00e4n Doe', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=UTF-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('%20'));
+      expect(header, isNot(contains('username*=UTF-8\'\'J%C3%A4n+Doe')));
+    });
+
+    test('special attr-chars not encoded', () {
+      // Use a username with attr-chars that should NOT be percent-encoded
+      // Plus a non-ASCII char to trigger username*
+      final a = DigestAuth('u\u00e4!#\$&+-.^_`|~', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=UTF-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      // The attr-chars should appear literally (unencoded) in the username* value
+      expect(header, contains('!#\$&+-.^_`|~'));
+    });
+
+    test('multi-byte UTF-8 correctly percent-encoded', () {
+      // CJK character U+4E16 (world) is 3 bytes in UTF-8: E4 B8 96
+      final a = DigestAuth('\u4e16', 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="test",nonce="n",qop="auth",charset=UTF-8',
+      );
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('%E4%B8%96'));
+    });
+  });
+
+  group('MockClient integration with charset=UTF-8', () {
+    test('full challenge-response with charset=UTF-8 and non-ASCII username',
+        () async {
+      var requestCount = 0;
+      const wwwAuthenticate =
+          'Digest realm="intl-server",nonce="charsetNonce123",'
+          'qop="auth",algorithm=SHA-256,charset=UTF-8';
+
+      final client = MockClient((request) async {
+        requestCount++;
+        if (requestCount == 1) {
+          return http.Response(
+            'Unauthorized',
+            401,
+            headers: {'www-authenticate': wwwAuthenticate},
+          );
+        } else {
+          final authHeader = request.headers['authorization'];
+          expect(authHeader, isNotNull);
+          expect(authHeader, startsWith('Digest '));
+          expect(authHeader, contains("username*=UTF-8''"));
+          expect(authHeader, contains('algorithm=SHA-256'));
+          expect(authHeader, contains('response="'));
+
+          return http.Response('{"status":"OK"}', 200);
+        }
+      });
+
+      final firstResponse = await client.post(
+        Uri.parse('http://localhost:18081/json_rpc'),
+        body: '{"jsonrpc":"2.0","method":"get_info"}',
+      );
+      expect(firstResponse.statusCode, equals(401));
+
+      final challenge = firstResponse.headers['www-authenticate']!;
+      final digestAuth = DigestAuth('J\u00e4s\u00f8n', 'S\u00e9cret');
+      digestAuth.initFromAuthorizationHeader(challenge);
+      final authString = digestAuth.getAuthString('POST', '/json_rpc');
+
+      final secondResponse = await client.post(
+        Uri.parse('http://localhost:18081/json_rpc'),
+        headers: {'authorization': authString},
+        body: '{"jsonrpc":"2.0","method":"get_info"}',
+      );
+      expect(secondResponse.statusCode, equals(200));
+
+      client.close();
+    });
+  });
 }

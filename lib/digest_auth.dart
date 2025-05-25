@@ -6,6 +6,7 @@ import 'dart:math' as math;
 
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
+import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
 import 'src/algorithm.dart';
 import 'src/errors.dart';
@@ -25,6 +26,7 @@ class DigestAuth {
   String? opaque;
   final DigestAlgorithm? _userAlgorithm;
   DigestAlgorithm _activeAlgorithm;
+  bool _charsetUtf8 = false;
   int _nonceCount = 0;
 
   /// Explicit [algorithm] is validated against the server challenge.
@@ -71,6 +73,10 @@ class DigestAuth {
     // If server doesn't send algorithm param, RFC says default is MD5.
     // _activeAlgorithm already defaults to md5 (or caller's explicit choice).
 
+    // charset=UTF-8 (RFC 7616 S4).
+    final charset = values['charset'];
+    _charsetUtf8 = charset != null && charset.toUpperCase() == 'UTF-8';
+
     // Check if the nonce has changed.
     if (nonce != values['nonce']) {
       nonce = values['nonce'];
@@ -93,14 +99,32 @@ class DigestAuth {
     String cnonce = _computeCnonce();
     String nc = _formatNonceCount(_nonceCount);
 
-    String ha1 = _activeAlgorithm.hash(utf8.encode("$username:$realm:$password"));
-    String ha2 = _activeAlgorithm.hash(utf8.encode("$method:$uri"));
-    String response =
-        _activeAlgorithm.hash(utf8.encode("$ha1:$nonce:$nc:$cnonce:$_qop:$ha2"));
+    // NFC-normalize credentials when charset=UTF-8.
+    final effectiveUsername = _charsetUtf8 ? unorm.nfc(username) : username;
+    final effectivePassword = _charsetUtf8 ? unorm.nfc(password) : password;
 
-    var header = 'Digest username="$username", realm="$realm", nonce="$nonce", '
-        'uri="$uri", qop=$_qop, nc=$nc, cnonce="$cnonce", '
-        'response="$response", algorithm=${_activeAlgorithm.headerValue}';
+    String ha1 = _activeAlgorithm
+        .hash(utf8.encode('$effectiveUsername:$realm:$effectivePassword'));
+    String ha2 = _activeAlgorithm.hash(utf8.encode('$method:$uri'));
+    String response = _activeAlgorithm
+        .hash(utf8.encode('$ha1:$nonce:$nc:$cnonce:$_qop:$ha2'));
+
+    // Non-ASCII username → RFC 5987 username* encoding.
+    final bool hasNonAscii = username.codeUnits.any((c) => c > 127);
+    final String usernameParam;
+    if (_charsetUtf8 && hasNonAscii) {
+      usernameParam = 'username*=${_encodeExtValue(effectiveUsername)}';
+    } else {
+      usernameParam = 'username="$effectiveUsername"';
+    }
+
+    var header = 'Digest $usernameParam, realm="$realm", nonce="$nonce", '
+        'uri="$uri", algorithm=${_activeAlgorithm.headerValue}, '
+        'qop=$_qop, nc=$nc, cnonce="$cnonce", response="$response"';
+
+    if (_charsetUtf8) {
+      header += ', userhash=false';
+    }
 
     if (opaque != null) {
       header += ', opaque="$opaque"';
@@ -175,6 +199,40 @@ class DigestAuth {
   /// Helper to format the nonce count.
   String _formatNonceCount(int count) =>
       count.toRadixString(16).padLeft(8, '0');
+
+  /// RFC 5987 ext-value encoding: UTF-8''percent-encoded.
+  String _encodeExtValue(String value) {
+    final bytes = utf8.encode(value);
+    final buffer = StringBuffer("UTF-8''");
+    for (final byte in bytes) {
+      if (_isAttrChar(byte)) {
+        buffer.writeCharCode(byte);
+      } else {
+        buffer.write(
+            '%${byte.toRadixString(16).padLeft(2, '0').toUpperCase()}');
+      }
+    }
+    return buffer.toString();
+  }
+
+  /// RFC 5987 attr-char check.
+  bool _isAttrChar(int byte) {
+    return (byte >= 0x41 && byte <= 0x5A) || // A-Z
+        (byte >= 0x61 && byte <= 0x7A) || // a-z
+        (byte >= 0x30 && byte <= 0x39) || // 0-9
+        byte == 0x21 || // !
+        byte == 0x23 || // #
+        byte == 0x24 || // $
+        byte == 0x26 || // &
+        byte == 0x2B || // +
+        byte == 0x2D || // -
+        byte == 0x2E || // .
+        byte == 0x5E || // ^
+        byte == 0x5F || // _
+        byte == 0x60 || // `
+        byte == 0x7C || // |
+        byte == 0x7E; // ~
+  }
 
   @Deprecated('Use DigestAlgorithm.md5.hash() instead.')
   String md5Hash(String input) {
