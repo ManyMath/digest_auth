@@ -656,6 +656,93 @@ void main() {
     });
   });
 
+  group('Multi-challenge algorithm negotiation', () {
+    const md5Challenge =
+        'Digest realm="test",nonce="n-md5",qop="auth",algorithm=MD5';
+    const sha256Challenge =
+        'Digest realm="test",nonce="n-sha256",qop="auth",algorithm=SHA-256';
+    const sha512Challenge =
+        'Digest realm="test",nonce="n-sha512",qop="auth",algorithm=SHA-512-256';
+
+    test('selects SHA-512-256 from [MD5, SHA-256, SHA-512-256]', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromMultipleChallenges([md5Challenge, sha256Challenge, sha512Challenge]);
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-512-256'));
+    });
+
+    test('selects SHA-256 from [MD5, SHA-256]', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromMultipleChallenges([md5Challenge, sha256Challenge]);
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+
+    test('selects MD5 when only [MD5] offered', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromMultipleChallenges([md5Challenge]);
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=MD5'));
+    });
+
+    test('explicit sha256 + server offers [MD5, SHA-256] uses SHA-256', () {
+      final a = DigestAuth('u', 'p', algorithm: DigestAlgorithm.sha256);
+      a.initFromMultipleChallenges([md5Challenge, sha256Challenge]);
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+
+    test('explicit sha256 + server offers only [MD5] throws AlgorithmMismatchException', () {
+      final a = DigestAuth('u', 'p', algorithm: DigestAlgorithm.sha256);
+      expect(
+        () => a.initFromMultipleChallenges([md5Challenge]),
+        throwsA(isA<AlgorithmMismatchException>()),
+      );
+    });
+
+    test('empty list throws DigestAuthFormatException', () {
+      final a = DigestAuth('u', 'p');
+      expect(
+        () => a.initFromMultipleChallenges([]),
+        throwsA(isA<DigestAuthFormatException>()),
+      );
+    });
+
+    test('non-Digest headers are skipped gracefully', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromMultipleChallenges([
+        'Basic realm="test"',
+        'Bearer token=abc',
+        sha256Challenge,
+      ]);
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-256'));
+    });
+
+    test('correct algorithm= in header after negotiation', () {
+      final a = DigestAuth('u', 'p');
+      a.initFromMultipleChallenges([md5Challenge, sha512Challenge]);
+      final header = a.getAuthString('GET', '/path');
+      expect(header, contains('algorithm=SHA-512-256'));
+      expect(header, isNot(contains('algorithm=MD5')));
+    });
+
+    test('realm, nonce, opaque from selected challenge are used', () {
+      const md5WithOpaque =
+          'Digest realm="md5-realm",nonce="md5-nonce",qop="auth",algorithm=MD5,opaque="md5-opq"';
+      const sha256WithOpaque =
+          'Digest realm="sha256-realm",nonce="sha256-nonce",qop="auth",algorithm=SHA-256,opaque="sha256-opq"';
+
+      final a = DigestAuth('u', 'p');
+      a.initFromMultipleChallenges([md5WithOpaque, sha256WithOpaque]);
+      final header = a.getAuthString('GET', '/path');
+      // SHA-256 is stronger, so its realm/nonce/opaque should be used
+      expect(header, contains('realm="sha256-realm"'));
+      expect(header, contains('nonce="sha256-nonce"'));
+      expect(header, contains('opaque="sha256-opq"'));
+    });
+  });
+
   group('MockClient integration with charset=UTF-8', () {
     test('full challenge-response with charset=UTF-8 and non-ASCII username',
         () async {

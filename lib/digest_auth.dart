@@ -92,6 +92,55 @@ class DigestAuth {
     }
   }
 
+  /// Select the strongest algorithm from multiple WWW-Authenticate challenges.
+  ///
+  /// Honors explicit [algorithm] if set; otherwise picks strongest per
+  /// RFC 7616 S3.4.
+  void initFromMultipleChallenges(List<String> challenges) {
+    if (challenges.isEmpty) {
+      throw DigestAuthFormatException(
+        'No WWW-Authenticate challenges provided',
+      );
+    }
+
+    // Parse algorithm from each challenge, build mapping
+    final parsed = <DigestAlgorithm, String>{};
+    for (final challenge in challenges) {
+      if (!challenge.startsWith('Digest ')) continue;
+      final params = _parseAuthenticateHeader(challenge);
+      final algoStr = params['algorithm'];
+      final algo = algoStr != null
+          ? DigestAlgorithm.fromHeaderValue(algoStr)
+          : DigestAlgorithm.md5; // RFC default
+      if (algo != null) {
+        parsed[algo] = challenge;
+      }
+    }
+
+    if (parsed.isEmpty) {
+      throw DigestAuthFormatException(
+        'No valid Digest challenges found in provided headers',
+      );
+    }
+
+    if (_userAlgorithm != null) {
+      // Caller forced an algorithm -- find matching challenge
+      final match = parsed[_userAlgorithm];
+      if (match == null) {
+        final offered = parsed.keys.map((a) => a.headerValue).join(', ');
+        throw AlgorithmMismatchException(
+          'Server offers [$offered] but caller requires ${_userAlgorithm.headerValue}',
+        );
+      }
+      initFromAuthorizationHeader(match);
+    } else {
+      // Auto-negotiate: pick strongest
+      final algorithms = parsed.keys.map((a) => a.headerValue).toList();
+      final strongest = DigestAlgorithm.selectStrongest(algorithms);
+      initFromAuthorizationHeader(parsed[strongest]!);
+    }
+  }
+
   /// Generate the Digest Authorization header.
   String getAuthString(String method, String uri) {
     this.uri = uri;
