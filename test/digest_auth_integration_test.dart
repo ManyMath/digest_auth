@@ -19,7 +19,8 @@ class DaemonRpc {
   Future<Map<String, dynamic>> call(
       String method, Map<String, dynamic> params) async {
     final http.Client client = http.Client();
-    final DigestAuth digestAuth = DigestAuth(username, password);
+    final DigestAuth digestAuth =
+        DigestAuth(username: username, password: password);
 
     final initialResponse = await client.post(
       Uri.parse(rpcUrl),
@@ -41,7 +42,8 @@ class DaemonRpc {
     digestAuth.initFromAuthorizationHeader(authInfo);
 
     String uri = Uri.parse(rpcUrl).path;
-    String authHeader = digestAuth.getAuthString('POST', uri);
+    String authHeader =
+        digestAuth.buildAuthorizationHeader(method: 'POST', uri: uri);
 
     final authenticatedResponse = await client.post(
       Uri.parse(rpcUrl),

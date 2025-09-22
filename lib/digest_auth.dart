@@ -1,3 +1,6 @@
+/// HTTP Digest Authentication (RFC 7616).
+library;
+
 export 'src/algorithm.dart';
 export 'src/errors.dart';
 
@@ -5,7 +8,6 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:convert/convert.dart';
-import 'package:crypto/crypto.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
 import 'src/algorithm.dart';
@@ -17,28 +19,38 @@ import 'src/errors.dart';
 ///
 /// Created because http_auth was not working for Monero daemon RPC responses.
 class DigestAuth {
-  final String username;
-  final String password;
-  String? realm;
-  String? nonce;
-  String? uri;
+  final String _username;
+  final String _password;
+  String? _realm;
+  String? _nonce;
+  String? _uri;
   final String _qop;
-  String? opaque;
+  String? _opaque;
   final DigestAlgorithm? _userAlgorithm;
   DigestAlgorithm _activeAlgorithm;
   bool _charsetUtf8 = false;
   int _nonceCount = 0;
 
+  String get username => _username;
+  String get password => _password;
+  String? get realm => _realm;
+  String? get nonce => _nonce;
+  String? get uri => _uri;
+  String? get opaque => _opaque;
+  String get qop => _qop;
+
   /// Explicit [algorithm] is validated against the server challenge.
   /// Omit to auto-negotiate (defaults to MD5 per RFC 2617).
-  DigestAuth(this.username, this.password,
-      {DigestAlgorithm? algorithm, String qop = 'auth'})
-      : _userAlgorithm = algorithm,
+  DigestAuth({
+    required String username,
+    required String password,
+    DigestAlgorithm? algorithm,
+    String qop = 'auth',
+  })  : _username = username,
+        _password = password,
+        _userAlgorithm = algorithm,
         _activeAlgorithm = algorithm ?? DigestAlgorithm.md5,
         _qop = qop;
-
-  /// The configured quality-of-protection value.
-  String get qop => _qop;
 
   /// Parse a `WWW-Authenticate` header and update internal state.
   ///
@@ -51,43 +63,38 @@ class DigestAuth {
 
     final Map<String, String> values = _parseAuthenticateHeader(authInfo);
 
-    realm = values['realm'];
-    opaque = values['opaque'];
+    _realm = values['realm'];
+    _opaque = values['opaque'];
 
     // Algorithm negotiation.
     final serverAlgorithm = values['algorithm'];
     if (serverAlgorithm != null) {
       final offered = DigestAlgorithm.fromHeaderValue(serverAlgorithm);
       if (_userAlgorithm != null) {
-        // Caller explicitly set algorithm -- validate server supports it
         if (offered == null || offered != _userAlgorithm) {
           throw AlgorithmMismatchException(
             'Server offers algorithm=$serverAlgorithm but caller requires ${_userAlgorithm.headerValue}',
           );
         }
       } else if (offered != null) {
-        // Auto-negotiate: use what server offers
         _activeAlgorithm = offered;
       }
     }
-    // If server doesn't send algorithm param, RFC says default is MD5.
-    // _activeAlgorithm already defaults to md5 (or caller's explicit choice).
 
     // charset=UTF-8 (RFC 7616 S4).
     final charset = values['charset'];
     _charsetUtf8 = charset != null && charset.toUpperCase() == 'UTF-8';
 
-    // Check if the nonce has changed.
-    if (nonce != values['nonce']) {
-      nonce = values['nonce'];
-      _nonceCount = 0; // Reset nonce count when nonce changes.
+    if (_nonce != values['nonce']) {
+      _nonce = values['nonce'];
+      _nonceCount = 0;
     }
 
     // Stale check must come after nonce update.
     final stale = values['stale'];
     if (stale != null && stale.toLowerCase() == 'true') {
       throw StaleNonceException(
-        'Server indicated nonce is stale. Nonce has been updated -- retry with getAuthString().',
+        'Server indicated nonce is stale. Nonce has been updated -- retry with buildAuthorizationHeader().',
       );
     }
   }
@@ -103,7 +110,6 @@ class DigestAuth {
       );
     }
 
-    // Parse algorithm from each challenge, build mapping
     final parsed = <DigestAlgorithm, String>{};
     for (final challenge in challenges) {
       if (!challenge.startsWith('Digest ')) continue;
@@ -111,7 +117,7 @@ class DigestAuth {
       final algoStr = params['algorithm'];
       final algo = algoStr != null
           ? DigestAlgorithm.fromHeaderValue(algoStr)
-          : DigestAlgorithm.md5; // RFC default
+          : DigestAlgorithm.md5;
       if (algo != null) {
         parsed[algo] = challenge;
       }
@@ -124,7 +130,6 @@ class DigestAuth {
     }
 
     if (_userAlgorithm != null) {
-      // Caller forced an algorithm -- find matching challenge
       final match = parsed[_userAlgorithm];
       if (match == null) {
         final offered = parsed.keys.map((a) => a.headerValue).join(', ');
@@ -134,32 +139,35 @@ class DigestAuth {
       }
       initFromAuthorizationHeader(match);
     } else {
-      // Auto-negotiate: pick strongest
       final algorithms = parsed.keys.map((a) => a.headerValue).toList();
       final strongest = DigestAlgorithm.selectStrongest(algorithms);
       initFromAuthorizationHeader(parsed[strongest]!);
     }
   }
 
-  /// Generate the Digest Authorization header.
-  String getAuthString(String method, String uri) {
-    this.uri = uri;
+  /// Build the Digest Authorization header value.
+  String buildAuthorizationHeader({
+    required String method,
+    required String uri,
+    List<int>? body,
+  }) {
+    _uri = uri;
     _nonceCount++;
     String cnonce = _computeCnonce();
     String nc = _formatNonceCount(_nonceCount);
 
     // NFC-normalize credentials when charset=UTF-8.
-    final effectiveUsername = _charsetUtf8 ? unorm.nfc(username) : username;
-    final effectivePassword = _charsetUtf8 ? unorm.nfc(password) : password;
+    final effectiveUsername = _charsetUtf8 ? unorm.nfc(_username) : _username;
+    final effectivePassword = _charsetUtf8 ? unorm.nfc(_password) : _password;
 
     String ha1 = _activeAlgorithm
-        .hash(utf8.encode('$effectiveUsername:$realm:$effectivePassword'));
+        .hash(utf8.encode('$effectiveUsername:$_realm:$effectivePassword'));
     String ha2 = _activeAlgorithm.hash(utf8.encode('$method:$uri'));
     String response = _activeAlgorithm
-        .hash(utf8.encode('$ha1:$nonce:$nc:$cnonce:$_qop:$ha2'));
+        .hash(utf8.encode('$ha1:$_nonce:$nc:$cnonce:$_qop:$ha2'));
 
     // Non-ASCII username → RFC 5987 username* encoding.
-    final bool hasNonAscii = username.codeUnits.any((c) => c > 127);
+    final bool hasNonAscii = _username.codeUnits.any((c) => c > 127);
     final String usernameParam;
     if (_charsetUtf8 && hasNonAscii) {
       usernameParam = 'username*=${_encodeExtValue(effectiveUsername)}';
@@ -167,7 +175,7 @@ class DigestAuth {
       usernameParam = 'username="$effectiveUsername"';
     }
 
-    var header = 'Digest $usernameParam, realm="$realm", nonce="$nonce", '
+    var header = 'Digest $usernameParam, realm="$_realm", nonce="$_nonce", '
         'uri="$uri", algorithm=${_activeAlgorithm.headerValue}, '
         'qop=$_qop, nc=$nc, cnonce="$cnonce", response="$response"';
 
@@ -175,14 +183,18 @@ class DigestAuth {
       header += ', userhash=false';
     }
 
-    if (opaque != null) {
-      header += ', opaque="$opaque"';
+    if (_opaque != null) {
+      header += ', opaque="$_opaque"';
     }
 
     return header;
   }
 
-  /// Parse WWW-Authenticate header with quoted-string awareness.
+  @Deprecated('Use buildAuthorizationHeader() instead')
+  String getAuthString(String method, String uri) =>
+      buildAuthorizationHeader(method: method, uri: uri);
+
+  /// Quoted-string-aware WWW-Authenticate header parser.
   Map<String, String> _parseAuthenticateHeader(String header) {
     if (!header.startsWith('Digest ')) {
       throw DigestAuthFormatException(
@@ -191,7 +203,7 @@ class DigestAuth {
     }
 
     final params = <String, String>{};
-    final token = header.substring(7); // Remove 'Digest '
+    final token = header.substring(7);
 
     var key = StringBuffer();
     var value = StringBuffer();
@@ -229,7 +241,6 @@ class DigestAuth {
       }
     }
 
-    // Last param (no trailing comma).
     final k = key.toString().trim();
     if (k.isNotEmpty) {
       params[k] = value.toString().trim();
@@ -238,14 +249,12 @@ class DigestAuth {
     return params;
   }
 
-  /// Helper to compute a random cnonce.
   String _computeCnonce() {
     final math.Random rnd = math.Random.secure();
     final List<int> values = List<int>.generate(16, (i) => rnd.nextInt(256));
     return hex.encode(values);
   }
 
-  /// Helper to format the nonce count.
   String _formatNonceCount(int count) =>
       count.toRadixString(16).padLeft(8, '0');
 
@@ -257,8 +266,8 @@ class DigestAuth {
       if (_isAttrChar(byte)) {
         buffer.writeCharCode(byte);
       } else {
-        buffer.write(
-            '%${byte.toRadixString(16).padLeft(2, '0').toUpperCase()}');
+        buffer
+            .write('%${byte.toRadixString(16).padLeft(2, '0').toUpperCase()}');
       }
     }
     return buffer.toString();
@@ -281,10 +290,5 @@ class DigestAuth {
         byte == 0x60 || // `
         byte == 0x7C || // |
         byte == 0x7E; // ~
-  }
-
-  @Deprecated('Use DigestAlgorithm.md5.hash() instead.')
-  String md5Hash(String input) {
-    return md5.convert(utf8.encode(input)).toString();
   }
 }

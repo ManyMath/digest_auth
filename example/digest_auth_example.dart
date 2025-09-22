@@ -31,7 +31,8 @@ class DaemonRpc {
   Future<Map<String, dynamic>> call(
       String method, Map<String, dynamic> params) async {
     final http.Client client = http.Client();
-    final DigestAuth digestAuth = DigestAuth(username, password);
+    final DigestAuth digestAuth =
+        DigestAuth(username: username, password: password);
 
     // Initial request to get the `WWW-Authenticate` header.
     final initialResponse = await client.post(
@@ -58,7 +59,8 @@ class DaemonRpc {
 
     // Create Authorization header for the second request.
     String uri = Uri.parse(rpcUrl).path;
-    String authHeader = digestAuth.getAuthString('POST', uri);
+    String authHeader =
+        digestAuth.buildAuthorizationHeader(method: 'POST', uri: uri);
 
     // Make the authenticated request.
     final authenticatedResponse = await client.post(
