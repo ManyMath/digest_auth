@@ -120,7 +120,7 @@ void main() {
       expect(header, contains('algorithm=SHA-512-256'));
     });
 
-    test('backward compatibility: default constructor works like Phase 1', () {
+    test('default constructor backward compatible', () {
       final auth = DigestAuth(username: 'testuser', password: 'testpass');
       auth.initFromAuthorizationHeader(
         'Digest realm="monero-rpc",nonce="testnonce",qop="auth"',

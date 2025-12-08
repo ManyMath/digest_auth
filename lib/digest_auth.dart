@@ -30,6 +30,8 @@ class DigestAuth {
   DigestAlgorithm _activeAlgorithm;
   bool _charsetUtf8 = false;
   int _nonceCount = 0;
+  String? _sessionHa1;
+  String? _sessionHa1Nonce;
 
   String get username => _username;
   String get password => _password;
@@ -88,6 +90,8 @@ class DigestAuth {
     if (_nonce != values['nonce']) {
       _nonce = values['nonce'];
       _nonceCount = 0;
+      _sessionHa1 = null;
+      _sessionHa1Nonce = null;
     }
 
     // Stale check must come after nonce update.
@@ -146,6 +150,8 @@ class DigestAuth {
   }
 
   /// Build the Digest Authorization header value.
+  ///
+  /// For qop=auth-int, [body] bytes are hashed into HA2. Ignored for qop=auth.
   String buildAuthorizationHeader({
     required String method,
     required String uri,
@@ -160,9 +166,17 @@ class DigestAuth {
     final effectiveUsername = _charsetUtf8 ? unorm.nfc(_username) : _username;
     final effectivePassword = _charsetUtf8 ? unorm.nfc(_password) : _password;
 
-    String ha1 = _activeAlgorithm
-        .hash(utf8.encode('$effectiveUsername:$_realm:$effectivePassword'));
-    String ha2 = _activeAlgorithm.hash(utf8.encode('$method:$uri'));
+    String ha1 = _computeHa1(cnonce, effectiveUsername, effectivePassword);
+
+    String ha2;
+    if (_qop == 'auth-int') {
+      final bodyBytes = body ?? <int>[];
+      final bodyHash = _activeAlgorithm.hash(bodyBytes);
+      ha2 = _activeAlgorithm.hash(utf8.encode('$method:$uri:$bodyHash'));
+    } else {
+      ha2 = _activeAlgorithm.hash(utf8.encode('$method:$uri'));
+    }
+
     String response = _activeAlgorithm
         .hash(utf8.encode('$ha1:$_nonce:$nc:$cnonce:$_qop:$ha2'));
 
@@ -257,6 +271,33 @@ class DigestAuth {
 
   String _formatNonceCount(int count) =>
       count.toRadixString(16).padLeft(8, '0');
+
+  /// Compute HA1 with session variant caching for -sess algorithms.
+  ///
+  /// For -sess variants, caches H(H(user:realm:pass):nonce:cnonce)
+  /// per nonce so subsequent requests reuse the same session key.
+  String _computeHa1(
+    String cnonce,
+    String effectiveUsername,
+    String effectivePassword,
+  ) {
+    final baseHa1 = _activeAlgorithm.hash(
+      utf8.encode('$effectiveUsername:$_realm:$effectivePassword'),
+    );
+
+    if (!_activeAlgorithm.isSession) return baseHa1;
+
+    // Reuse cached session key if nonce hasn't changed.
+    if (_sessionHa1 != null && _sessionHa1Nonce == _nonce) {
+      return _sessionHa1!;
+    }
+
+    _sessionHa1 = _activeAlgorithm.hash(
+      utf8.encode('$baseHa1:$_nonce:$cnonce'),
+    );
+    _sessionHa1Nonce = _nonce;
+    return _sessionHa1!;
+  }
 
   /// RFC 5987 ext-value encoding: UTF-8''percent-encoded.
   String _encodeExtValue(String value) {

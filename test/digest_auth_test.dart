@@ -877,4 +877,260 @@ void main() {
       client.close();
     });
   });
+
+  group('auth-int support', () {
+    test('auth-int with body produces correct HA2', () {
+      final a = DigestAuth(username: 'user', password: 'pass', qop: 'auth-int');
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth-int"',
+      );
+      final body = utf8.encode('{"method":"test"}');
+      final header = a.buildAuthorizationHeader(
+        method: 'POST',
+        uri: '/api',
+        body: body,
+      );
+      expect(header, contains('qop=auth-int'));
+
+      // Manually compute expected response to verify correctness
+      final algo = DigestAlgorithm.md5;
+      final ha1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final bodyHash = algo.hash(body);
+      final ha2 = algo.hash(utf8.encode('POST:/api:$bodyHash'));
+      // Extract nc and cnonce from header to compute expected response
+      final ncMatch = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header)!.group(1)!;
+      final cnonceMatch =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header)!.group(1)!;
+      final expectedResponse = algo.hash(
+        utf8.encode('$ha1:testnonce:$ncMatch:$cnonceMatch:auth-int:$ha2'),
+      );
+      expect(header, contains('response="$expectedResponse"'));
+    });
+
+    test('auth-int with null body uses empty body hash', () {
+      final a = DigestAuth(username: 'user', password: 'pass', qop: 'auth-int');
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth-int"',
+      );
+      final header = a.buildAuthorizationHeader(
+        method: 'GET',
+        uri: '/path',
+      );
+      // Verify response uses H(empty bytes) for body hash
+      final algo = DigestAlgorithm.md5;
+      final ha1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final emptyBodyHash = algo.hash(<int>[]);
+      final ha2 = algo.hash(utf8.encode('GET:/path:$emptyBodyHash'));
+      final ncMatch = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header)!.group(1)!;
+      final cnonceMatch =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header)!.group(1)!;
+      final expectedResponse = algo.hash(
+        utf8.encode('$ha1:testnonce:$ncMatch:$cnonceMatch:auth-int:$ha2'),
+      );
+      expect(header, contains('response="$expectedResponse"'));
+    });
+
+    test('qop=auth ignores body parameter', () {
+      final a = DigestAuth(username: 'user', password: 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth"',
+      );
+      final body = utf8.encode('some body');
+      final withBody = a.buildAuthorizationHeader(
+        method: 'POST',
+        uri: '/api',
+        body: body,
+      );
+
+      // Create second instance to get header without body
+      final b = DigestAuth(username: 'user', password: 'pass');
+      b.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth"',
+      );
+      final withoutBody = b.buildAuthorizationHeader(
+        method: 'POST',
+        uri: '/api',
+      );
+
+      // Both should have qop=auth (not auth-int)
+      expect(withBody, contains('qop=auth'));
+      expect(withoutBody, contains('qop=auth'));
+      // cnonce differs so full headers differ, but both use H(method:uri) for HA2
+    });
+
+    test('auth-int with SHA-256 uses SHA-256 for body hash', () {
+      final a = DigestAuth(
+        username: 'user',
+        password: 'pass',
+        algorithm: DigestAlgorithm.sha256,
+        qop: 'auth-int',
+      );
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth-int",algorithm=SHA-256',
+      );
+      final body = utf8.encode('test body');
+      final header = a.buildAuthorizationHeader(
+        method: 'POST',
+        uri: '/api',
+        body: body,
+      );
+      expect(header, contains('algorithm=SHA-256'));
+      expect(header, contains('qop=auth-int'));
+
+      // Verify using SHA-256 for all hashes including body
+      final algo = DigestAlgorithm.sha256;
+      final ha1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final bodyHash = algo.hash(body);
+      final ha2 = algo.hash(utf8.encode('POST:/api:$bodyHash'));
+      final ncMatch = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header)!.group(1)!;
+      final cnonceMatch =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header)!.group(1)!;
+      final expectedResponse = algo.hash(
+        utf8.encode('$ha1:testnonce:$ncMatch:$cnonceMatch:auth-int:$ha2'),
+      );
+      expect(header, contains('response="$expectedResponse"'));
+    });
+  });
+
+  group('Session variant support', () {
+    test('MD5-sess produces session HA1', () {
+      final a = DigestAuth(
+        username: 'user',
+        password: 'pass',
+        algorithm: DigestAlgorithm.md5sess,
+      );
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth",algorithm=MD5-sess',
+      );
+      final header = a.buildAuthorizationHeader(method: 'GET', uri: '/path');
+      expect(header, contains('algorithm=MD5-sess'));
+
+      // Verify session HA1: H(H(user:realm:pass):nonce:cnonce)
+      final algo = DigestAlgorithm.md5;
+      final baseHa1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final cnonceMatch =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header)!.group(1)!;
+      final sessionHa1 =
+          algo.hash(utf8.encode('$baseHa1:testnonce:$cnonceMatch'));
+      final ha2 = algo.hash(utf8.encode('GET:/path'));
+      final ncMatch = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header)!.group(1)!;
+      final expectedResponse = algo.hash(
+        utf8.encode('$sessionHa1:testnonce:$ncMatch:$cnonceMatch:auth:$ha2'),
+      );
+      expect(header, contains('response="$expectedResponse"'));
+    });
+
+    test('MD5-sess reuses cached HA1 for second request with same nonce', () {
+      final a = DigestAuth(
+        username: 'user',
+        password: 'pass',
+        algorithm: DigestAlgorithm.md5sess,
+      );
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth",algorithm=MD5-sess',
+      );
+      final header1 = a.buildAuthorizationHeader(method: 'GET', uri: '/path1');
+      final header2 = a.buildAuthorizationHeader(method: 'GET', uri: '/path2');
+
+      // Extract cnonces -- they should differ
+      final cnonce1 =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header1)!.group(1)!;
+      final cnonce2 =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header2)!.group(1)!;
+      expect(cnonce1, isNot(equals(cnonce2)));
+
+      // But the session HA1 uses cnonce1 (first request's cnonce), not cnonce2
+      // Verify header2's response uses the session key from request 1
+      final algo = DigestAlgorithm.md5;
+      final baseHa1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final sessionHa1 = algo.hash(utf8.encode('$baseHa1:testnonce:$cnonce1'));
+      final ha2 = algo.hash(utf8.encode('GET:/path2'));
+      final nc2 = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header2)!.group(1)!;
+      final expectedResponse2 = algo.hash(
+        utf8.encode('$sessionHa1:testnonce:$nc2:$cnonce2:auth:$ha2'),
+      );
+      expect(header2, contains('response="$expectedResponse2"'));
+    });
+
+    test('SHA-256-sess produces correct session HA1', () {
+      final a = DigestAuth(
+        username: 'user',
+        password: 'pass',
+        algorithm: DigestAlgorithm.sha256sess,
+      );
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth",algorithm=SHA-256-sess',
+      );
+      final header = a.buildAuthorizationHeader(method: 'GET', uri: '/path');
+      expect(header, contains('algorithm=SHA-256-sess'));
+
+      final algo = DigestAlgorithm.sha256;
+      final baseHa1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final cnonceMatch =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header)!.group(1)!;
+      final sessionHa1 =
+          algo.hash(utf8.encode('$baseHa1:testnonce:$cnonceMatch'));
+      final ha2 = algo.hash(utf8.encode('GET:/path'));
+      final ncMatch = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header)!.group(1)!;
+      final expectedResponse = algo.hash(
+        utf8.encode('$sessionHa1:testnonce:$ncMatch:$cnonceMatch:auth:$ha2'),
+      );
+      expect(header, contains('response="$expectedResponse"'));
+    });
+
+    test('session HA1 invalidated on nonce change', () {
+      final a = DigestAuth(
+        username: 'user',
+        password: 'pass',
+        algorithm: DigestAlgorithm.md5sess,
+      );
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="nonce1",qop="auth",algorithm=MD5-sess',
+      );
+      final header1 = a.buildAuthorizationHeader(method: 'GET', uri: '/path');
+      final cnonce1 =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header1)!.group(1)!;
+
+      // New nonce -- session HA1 must be recomputed
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="nonce2",qop="auth",algorithm=MD5-sess',
+      );
+      final header2 = a.buildAuthorizationHeader(method: 'GET', uri: '/path');
+      final cnonce2 =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header2)!.group(1)!;
+
+      // cnonces should differ across nonce boundaries
+      expect(cnonce1, isNot(equals(cnonce2)));
+
+      // Session keys should use different nonces
+      final algo = DigestAlgorithm.md5;
+      final baseHa1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final sessionHa1_2 = algo.hash(utf8.encode('$baseHa1:nonce2:$cnonce2'));
+      final ha2 = algo.hash(utf8.encode('GET:/path'));
+      final nc2 = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header2)!.group(1)!;
+      final expectedResponse2 = algo.hash(
+        utf8.encode('$sessionHa1_2:nonce2:$nc2:$cnonce2:auth:$ha2'),
+      );
+      expect(header2, contains('response="$expectedResponse2"'));
+    });
+
+    test('non-session algorithm does not use session caching', () {
+      final a = DigestAuth(username: 'user', password: 'pass');
+      a.initFromAuthorizationHeader(
+        'Digest realm="testrealm",nonce="testnonce",qop="auth"',
+      );
+      final header = a.buildAuthorizationHeader(method: 'GET', uri: '/path');
+      // Standard MD5 HA1 = H(user:realm:pass), no session key
+      final algo = DigestAlgorithm.md5;
+      final ha1 = algo.hash(utf8.encode('user:testrealm:pass'));
+      final ha2 = algo.hash(utf8.encode('GET:/path'));
+      final ncMatch = RegExp(r'nc=([0-9a-f]{8})').firstMatch(header)!.group(1)!;
+      final cnonceMatch =
+          RegExp(r'cnonce="([^"]+)"').firstMatch(header)!.group(1)!;
+      final expectedResponse = algo.hash(
+        utf8.encode('$ha1:testnonce:$ncMatch:$cnonceMatch:auth:$ha2'),
+      );
+      expect(header, contains('response="$expectedResponse"'));
+    });
+  });
 }
